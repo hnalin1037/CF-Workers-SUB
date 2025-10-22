@@ -207,6 +207,13 @@ export default {
 				if (!subConverterResponse.ok) return new Response(base64Data, { headers: responseHeaders });
 				let subConverterContent = await subConverterResponse.text();
 				if (订阅格式 == 'clash') subConverterContent = await clashFix(subConverterContent);
+				// ---------- 在这里调用移除 geoip 的函数 ----------
+				try {
+				    subConverterContent = removeGeoipFromString(subConverterContent);
+				} catch (e) {
+				    console.error('remove geoip failed', e);
+				}
+				// ---------- 调用结束 ----------
 				// 只有非浏览器订阅才会返回SUBNAME
 				if (!userAgent.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(FileName)}`;
 				return new Response(subConverterContent, { headers: responseHeaders });
@@ -325,6 +332,52 @@ function clashFix(content) {
 	}
 	return content;
 }
+
+// --------- 新增：移除 geoip 字段（优先尝试 JSON 解析，fallback 使用正则） -----------
+function removeGeoipFromString(content) {
+	try {
+		// 尝试解析为 JSON（可能是对象或数组）
+		let obj = JSON.parse(content);
+
+		// 递归删除所有键为 'geoip' 的字段
+		function recurseRemove(o) {
+			if (!o || typeof o !== 'object') return;
+			if (Array.isArray(o)) {
+				for (let i = 0; i < o.length; i++) {
+					recurseRemove(o[i]);
+				}
+			} else {
+				// 删除直接的 geoip 字段
+				if (Object.prototype.hasOwnProperty.call(o, 'geoip')) {
+					delete o['geoip'];
+				}
+				// 继续递归子属性
+				for (const k of Object.keys(o)) {
+					recurseRemove(o[k]);
+				}
+			}
+		}
+		recurseRemove(obj);
+		// 返回压缩后的 JSON（保留原有格式也可）
+		return JSON.stringify(obj);
+	} catch (e) {
+		// 不是合法 JSON，降级使用正则去除所有 "geoip":"..." 或 "geoip": "..." 的出现（简单安全替换）
+		// 注意处理可能在数组或对象中留下多余逗号的问题，但大多数订阅 JSON 是可容忍的
+		try {
+			// 替换 "geoip":"xxx", 以及 ,"geoip":"xxx" 和 "geoip":"xxx"
+			// 同时也处理单引号与空格可能性
+			let s = content.replace(/,\s*"geoip"\s*:\s*"[^"]*"/ig, '');
+			s = s.replace(/"\s*geoip"\s*:\s*"[^"]*"\s*,/ig, '');
+			s = s.replace(/"\s*geoip"\s*:\s*"[^"]*"/ig, '');
+			return s;
+		} catch (e2) {
+			// 最终兜底，返回原始内容
+			console.error('removeGeoipFromString fallback error', e2);
+			return content;
+		}
+	}
+}
+// -------------------------------------------------------------------------------------
 
 async function proxyURL(proxyURL, url) {
 	const URLs = await ADD(proxyURL);
@@ -825,4 +878,5 @@ async function KV(request, env, txt = 'ADD.txt', guest) {
 			headers: { "Content-Type": "text/plain;charset=utf-8" }
 		});
 	}
+
 }
